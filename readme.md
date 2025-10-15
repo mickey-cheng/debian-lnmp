@@ -50,13 +50,13 @@
 
 ```bash
 # 使用 wget
-wget https://raw.githubusercontent.com/你的用户名/仓库名/main/lnmp_install.sh
+wget https://raw.githubusercontent.com/mickey-cheng/debian-lnmp/refs/heads/main/wg_udp_2_raw_installer.sh
 
 # 或使用 curl
-curl -O https://raw.githubusercontent.com/你的用户名/仓库名/main/lnmp_install.sh
+curl -O https://raw.githubusercontent.com/mickey-cheng/debian-lnmp/refs/heads/main/wg_udp_2_raw_installer.sh
 
 # 或直接克隆仓库
-git clone https://github.com/你的用户名/仓库名.git
+git clone https://github.com/mickey-cheng/debian-lnmp.git
 cd 仓库名
 ```
 
