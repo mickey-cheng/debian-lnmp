@@ -353,6 +353,24 @@ server {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
+    # phpMyAdmin 配置
+    location ^~ /phpmyadmin {
+        alias /usr/share/phpmyadmin;
+        index index.php;
+        
+        location ~ ^/phpmyadmin/(.+\.php)$ {
+            alias /usr/share/phpmyadmin/\$1;
+            fastcgi_pass unix:$PHP_FPM_SOCK;
+            fastcgi_index index.php;
+            fastcgi_param SCRIPT_FILENAME \$request_filename;
+            include fastcgi_params;
+        }
+        
+        location ~* ^/phpmyadmin/(.+\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt))$ {
+            alias /usr/share/phpmyadmin/\$1;
+        }
+    }
+
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:$PHP_FPM_SOCK;
