@@ -152,50 +152,49 @@ systemctl start nginx
 print_info "安装 MariaDB..."
 apt install -y mariadb-server mariadb-client
 
-# 安装 PHP 8.2 及相关扩展
-print_info "添加 Sury PHP 仓库..."
-# 下载并添加 GPG 密钥
-curl -sS https://packages.sury.org/php/apt.gpg | gpg --dearmor | tee /usr/share/keyrings/deb.sury.org-php.gpg > /dev/null
-if [ $? -ne 0 ]; then
-    print_error "无法添加 Sury PHP 仓库的 GPG 密钥"
+print_info "安装 PHP 及相关扩展..."
+# 使用 Debian 官方仓库安装 PHP
+apt install -y php php-fpm php-mysql php-curl php-gd php-mbstring php-xml php-zip php-bz2 php-intl
+
+# 检查安装的 PHP 版本
+PHP_VERSION=$(php --version | head -n1 | cut -d " " -f 2 | cut -d "." -f 1,2)
+print_info "已安装 PHP 版本: $PHP_VERSION"
+
+# 检查 PHP-FPM 服务名称
+if systemctl list-units --type=service | grep -q "php${PHP_VERSION}-fpm"; then
+    PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
+elif systemctl list-units --type=service | grep -q "php-fpm"; then
+    PHP_FPM_SERVICE="php-fpm"
+else
+    print_error "无法找到 PHP-FPM 服务"
     exit 1
 fi
 
-echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/php.list
-
-# 更新包列表
-apt update
-if [ $? -ne 0 ]; then
-    print_error "无法更新包列表"
-    exit 1
-fi
-
-print_info "安装 PHP 8.2 及扩展..."
-apt install -y php8.2 php8.2-fpm php8.2-mysql php8.2-curl php8.2-gd php8.2-mbstring php8.2-xml php8.2-zip php8.2-bz2 php8.2-intl
+print_info "PHP-FPM 服务名称: $PHP_FPM_SERVICE"
 
 # 配置 PHP-FPM
 print_info "配置 PHP-FPM..."
-sed -i 's/;*expose_php = .*/expose_php = Off/' /etc/php/8.2/fpm/php.ini
-sed -i 's/;*allow_url_fopen = .*/allow_url_fopen = Off/' /etc/php/8.2/fpm/php.ini
-sed -i 's/display_errors = .*/display_errors = Off/' /etc/php/8.2/fpm/php.ini
-sed -i 's/display_startup_errors = .*/display_startup_errors = Off/' /etc/php/8.2/fpm/php.ini
-sed -i 's/log_errors = .*/log_errors = On/' /etc/php/8.2/fpm/php.ini
-sed -i 's/file_uploads = .*/file_uploads = On/' /etc/php/8.2/fpm/php.ini
-sed -i 's/upload_max_filesize = .*/upload_max_filesize = 64M/' /etc/php/8.2/fpm/php.ini
-sed -i 's/post_max_size = .*/post_max_size = 64M/' /etc/php/8.2/fpm/php.ini
-sed -i 's/max_execution_time = .*/max_execution_time = 300/' /etc/php/8.2/fpm/php.ini
-sed -i 's/max_input_vars = .*/max_input_vars = 3000/' /etc/php/8.2/fpm/php.ini
-sed -i 's/;*cgi.fix_pathinfo = .*/cgi.fix_pathinfo = 0/' /etc/php/8.2/fpm/php.ini
+sed -i "s/;*expose_php = .*/expose_php = Off/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/;*allow_url_fopen = .*/allow_url_fopen = Off/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/display_errors = .*/display_errors = Off/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/display_startup_errors = .*/display_startup_errors = Off/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/log_errors = .*/log_errors = On/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/file_uploads = .*/file_uploads = On/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/upload_max_filesize = .*/upload_max_filesize = 64M/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/post_max_size = .*/post_max_size = 64M/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/max_execution_time = .*/max_execution_time = 300/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/max_input_vars = .*/max_input_vars = 3000/" "/etc/php/$PHP_VERSION/fpm/php.ini"
+sed -i "s/;*cgi.fix_pathinfo = .*/cgi.fix_pathinfo = 0/" "/etc/php/$PHP_VERSION/fpm/php.ini"
 
 # 启动 PHP-FPM
-systemctl enable php8.2-fpm
-systemctl start php8.2-fpm
+systemctl enable "$PHP_FPM_SERVICE"
+systemctl start "$PHP_FPM_SERVICE"
 
 # 验证 PHP-FPM 是否正常运行
 sleep 2
-if ! systemctl is-active --quiet php8.2-fpm; then
+if ! systemctl is-active --quiet "$PHP_FPM_SERVICE"; then
     print_error "PHP-FPM 未能正常启动"
-    systemctl status php8.2-fpm
+    systemctl status "$PHP_FPM_SERVICE"
     exit 1
 fi
 print_info "PHP-FPM 运行正常"
@@ -223,7 +222,7 @@ server {
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_pass unix:/run/php/$PHP_FPM_SERVICE.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -420,7 +419,7 @@ $(echo "$pma_allowed_ips" | tr ' ' '\n' | sed 's/^/    allow /')
         if (!-f \$request_filename) {
             return 404;
         }
-        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_pass unix:/run/php/$PHP_FPM_SERVICE.sock;
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$request_filename;
@@ -450,7 +449,7 @@ location $pma_path {
         if (!-f \$request_filename) {
             return 404;
         }
-        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_pass unix:/run/php/$PHP_FPM_SERVICE.sock;
         fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$request_filename;
