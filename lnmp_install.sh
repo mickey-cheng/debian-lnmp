@@ -291,11 +291,33 @@ fi
 
 # 安装 phpMyAdmin
 PMA_VERSION="5.2.1"
-PMA_URL="https://files.phpmyadmin.net/phpMyAdmin/$PMA_VERSION/phpMyAdmin-$PMA_VERSION-all-languages.tar.gz"
+
+# 尝试使用国内镜像源，如果失败则使用官方源
+MIRRORS=(
+    "https://mirrors.aliyun.com/phpmyadmin/phpMyAdmin/$PMA_VERSION/phpMyAdmin-$PMA_VERSION-all-languages.tar.gz"
+    "https://cdn.mysqlmomu.com/phpmyadmin/phpMyAdmin/$PMA_VERSION/phpMyAdmin-$PMA_VERSION-all-languages.tar.gz"
+    "https://files.phpmyadmin.net/phpMyAdmin/$PMA_VERSION/phpMyAdmin-$PMA_VERSION-all-languages.tar.gz"
+)
+
 print_info "下载 phpMyAdmin $PMA_VERSION..."
+
 cd /tmp
-if ! wget --tries=3 --timeout=30 "$PMA_URL"; then
-    print_error "无法下载 phpMyAdmin，请检查网络连接"
+DOWNLOAD_SUCCESS=false
+
+for mirror_url in "${MIRRORS[@]}"; do
+    print_info "尝试从 $mirror_url 下载..."
+    if wget --tries=3 --timeout=30 "$mirror_url" -O "phpMyAdmin-$PMA_VERSION-all-languages.tar.gz"; then
+        print_info "下载成功"
+        DOWNLOAD_SUCCESS=true
+        break
+    else
+        print_warn "从 $mirror_url 下载失败，尝试下一个源..."
+        rm -f "phpMyAdmin-$PMA_VERSION-all-languages.tar.gz"
+    fi
+done
+
+if [ "$DOWNLOAD_SUCCESS" = false ]; then
+    print_error "所有源都无法下载 phpMyAdmin，请检查网络连接"
     exit 1
 fi
 
@@ -319,14 +341,8 @@ ln -s /usr/share/phpmyadmin /var/www/html/phpmyadmin
 mkdir -p /usr/share/phpmyadmin/config
 chown -R www-data:www-data /usr/share/phpmyadmin
 chmod -R 755 /usr/share/phpmyadmin
-chmod 660 /usr/share/phpmyadmin/config/config.inc.php
 
-# 验证 phpMyAdmin 目录权限
-if [[ ! -r /usr/share/phpmyadmin/config.inc.php ]]; then
-    print_error "phpMyAdmin 配置文件权限设置失败"
-    exit 1
-fi
-print_info "phpMyAdmin 权限设置正确"
+print_info "phpMyAdmin 目录结构设置完成"
 
 # 创建 phpMyAdmin 配置文件
 print_info "配置 phpMyAdmin..."
@@ -396,6 +412,15 @@ else
 \$cfg['CheckConfigurationPermissions'] = false;
 ?>
 EOF
+fi
+
+# 设置 phpMyAdmin 配置文件权限
+if [[ -f /usr/share/phpmyadmin/config.inc.php ]]; then
+    chown www-data:www-data /usr/share/phpmyadmin/config.inc.php
+    chmod 644 /usr/share/phpmyadmin/config.inc.php
+    print_info "phpMyAdmin 配置文件权限设置完成"
+else
+    print_warn "phpMyAdmin 配置文件未找到，跳过权限设置"
 fi
 
 # 配置 Nginx 以支持 phpMyAdmin
