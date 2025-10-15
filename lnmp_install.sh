@@ -1,626 +1,549 @@
 #!/bin/bash
-# Debian 13 LNMP 一键安装脚本
-# Linux + Nginx + MySQL + PHP + phpMyAdmin
-# 支持最小化系统，增强了安全性、错误处理和兼容性
 
-set -e
+# Debian 12 一键安装 LNMP + phpMyAdmin 脚本
+# 作者: Assistant
+# 日期: $(date +%Y-%m-%d)
 
-REPORT_FILE="/root/lnmp_install_report.txt"
-LOG_FILE="/root/lnmp_install.log"
+# 设置错误处理
+set -e  # 遇到错误时退出
+set -u  # 使用未定义变量时退出
+set -o pipefail  # 管道中命令失败时退出
 
-# 颜色输出
+# 错误处理函数
+handle_error() {
+    local line_number=$1
+    print_error "脚本在第 $line_number 行发生错误"
+    print_error "安装过程失败，请检查错误信息并手动修复问题"
+    exit 1
+}
+
+# 设置错误陷阱
+trap 'handle_error $LINENO' ERR
+
+# 中断处理函数
+handle_interrupt() {
+    print_warn "安装过程被用户中断"
+    print_info "可能需要手动清理部分安装的组件"
+    exit 1
+}
+
+# 设置中断陷阱
+trap 'handle_interrupt' INT
+
+# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# 日志函数
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+# 打印带颜色的信息
+print_info() {
+    echo -e "${GREEN}[INFO]${NC} $1"
 }
 
-error_exit() {
-    echo -e "${RED}❌ 错误: $1${NC}" >&2
-    log "ERROR: $1"
-    exit 1
+print_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
 }
 
-success() {
-    echo -e "${GREEN}✅ $1${NC}"
-    log "SUCCESS: $1"
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
 }
 
-warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-    log "WARNING: $1"
-}
-
-# 检查命令是否成功执行
-check_command() {
-    if [ $? -ne 0 ]; then
-        error_exit "$1"
-    fi
-}
-
-echo "=================================="
-echo "  Debian 13 LNMP 一键安装脚本"
-echo "  (含 phpMyAdmin 管理工具)"
-echo "  版本: v1.0"
-echo "=================================="
-log "开始 LNMP 安装流程"
-
-# 检查是否为 root
-if [[ $EUID -ne 0 ]]; then
-   error_exit "请使用 root 用户运行此脚本！"
-fi
-
-# 检查系统版本
-if [ -f /etc/os-release ]; then
-    if ! grep -q "Debian" /etc/os-release; then
-        warning "此脚本为 Debian 系统设计，当前系统可能不兼容"
-    fi
+# 检查是否为 root 用户
+if [[ $EUID -eq 0 ]]; then
+    print_info "以 root 身份运行脚本"
 else
-    warning "无法检测系统版本"
+    print_error "请使用 root 权限运行此脚本 (sudo ./install_lnmp.sh)"
+    exit 1
 fi
+
+# 检查系统兼容性
+if ! command -v lsb_release &> /dev/null; then
+    print_error "lsb_release 命令不可用，请确保系统已安装 lsb-release 包"
+    exit 1
+fi
+
+if [[ $(lsb_release -si) != "Debian" ]]; then
+    print_error "此脚本仅支持 Debian 系统，检测到的系统是: $(lsb_release -si)"
+    exit 1
+fi
+
+if [[ $(lsb_release -sr) != "12"* ]]; then
+    print_warn "此脚本为 Debian 12 设计，检测到的版本是: $(lsb_release -sr)"
+    print_warn "继续运行可能会出现问题"
+    read -p "是否继续? (y/N): " continue_install
+    if [[ $continue_install != "y" && $continue_install != "Y" ]]; then
+        exit 0
+    fi
+fi
+
+# 检查可用磁盘空间（至少需要 500MB）
+available_space=$(df / | awk 'NR==2 {print $4}')
+if [[ $available_space -lt 500000 ]]; then
+    print_error "磁盘空间不足，至少需要 500MB，当前可用空间: $(($available_space/1024))MB"
+    exit 1
+fi
+
+# 更新系统
+print_info "更新系统包列表..."
+apt update -y
+
+# 安装必要的工具
+print_info "安装必要工具..."
+apt install -y curl wget gnupg2 software-properties-common apt-transport-https lsb-release ca-certificates
 
 # 检查网络连接
-echo
-log "检查网络连接..."
-if ! ping -c 1 8.8.8.8 >/dev/null 2>&1 && ! ping -c 1 114.114.114.114 >/dev/null 2>&1; then
-    error_exit "网络连接失败，请检查网络配置"
+print_info "检查网络连接..."
+if ! curl -s --connect-timeout 5 https://www.debian.org > /dev/null; then
+    print_error "网络连接失败，请检查网络设置"
+    exit 1
 fi
-success "网络连接正常"
 
-# 默认参数
-WEB_ROOT="/var/www/html"
-DOMAIN="localhost"
-
-# --------------------
-# MySQL 配置交互
-# --------------------
+# 提示用户输入自定义配置
 echo
-echo ">>> 配置 MySQL"
-read -p "请输入 MySQL root 用户名（默认: root）: " MYSQL_USER
-MYSQL_USER=${MYSQL_USER:-root}
+print_info "请输入以下配置信息（直接回车使用默认值）："
+echo
 
-# 密码输入（不回显）
-while true; do
-    read -s -p "请输入 MySQL root 密码（默认: root123456）: " MYSQL_PWD
-    echo
-    MYSQL_PWD=${MYSQL_PWD:-root123456}
+read -p "请输入 MySQL root 密码 (留空将自动生成随机密码): " mysql_root_pass
+if [ -z "$mysql_root_pass" ]; then
+    mysql_root_pass=$(openssl rand -base64 12)
+    print_warn "已生成随机 MySQL root 密码: $mysql_root_pass"
+fi
+
+print_info "phpMyAdmin 可以配置一个控制用户来实现更多功能，"
+read -p "是否创建 phpMyAdmin 控制用户？(y/N，默认: n): " create_pma_user
+create_pma_user=${create_pma_user:-n}
+
+if [ "$create_pma_user" = "y" ] || [ "$create_pma_user" = "Y" ]; then
+    read -p "请输入 phpMyAdmin 控制用户名 (默认: pma): " pma_user
+    pma_user=${pma_user:-pma}
     
-    if [ ${#MYSQL_PWD} -lt 8 ]; then
-        warning "密码长度少于8位，建议使用更强的密码"
-        read -p "是否继续使用此密码？(y/N): " confirm
-        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-            continue
-        fi
+    read -p "请输入 phpMyAdmin 控制用户密码 (留空将自动生成随机密码): " pma_pass
+    if [ -z "$pma_pass" ]; then
+        pma_pass=$(openssl rand -base64 12)
+        print_warn "已生成随机 phpMyAdmin 控制用户密码: $pma_pass"
     fi
-    break
-done
-
-read -p "请输入 MySQL 监听端口（默认: 3306）: " MYSQL_PORT
-MYSQL_PORT=${MYSQL_PORT:-3306}
-
-# 检查端口是否被占用
-if command -v netstat >/dev/null 2>&1; then
-    if netstat -tuln 2>/dev/null | grep -q ":$MYSQL_PORT "; then
-        error_exit "端口 $MYSQL_PORT 已被占用，请选择其他端口"
-    fi
-elif command -v ss >/dev/null 2>&1; then
-    if ss -tuln 2>/dev/null | grep -q ":$MYSQL_PORT "; then
-        error_exit "端口 $MYSQL_PORT 已被占用，请选择其他端口"
-    fi
+else
+    print_info "跳过 phpMyAdmin 控制用户创建"
+    pma_user=""
+    pma_pass=""
 fi
 
-read -p "是否允许远程访问 MySQL？(y/N): " MYSQL_REMOTE
-MYSQL_REMOTE=${MYSQL_REMOTE,,}  # 转小写
+read -p "请输入 phpMyAdmin 访问路径 (默认: /phpmyadmin): " pma_path
+pma_path=${pma_path:-/phpmyadmin}
 
-# --------------------
-# 系统更新与软件安装
-# --------------------
-echo
-log "开始更新系统..."
-apt update -y || error_exit "apt update 失败，请检查网络和软件源配置"
-apt upgrade -y || warning "系统升级遇到问题，继续安装..."
-success "系统更新完成"
+read -p "是否限制 phpMyAdmin 访问来源 (y/N，默认: n): " restrict_pma_access
+restrict_pma_access=${restrict_pma_access:-n}
 
-echo
-log "安装基础依赖和必要工具..."
-# 最小化系统可能缺少这些基础包
-apt install -y apt-utils dialog debconf-utils 2>/dev/null || true
-apt install -y ca-certificates gnupg lsb-release software-properties-common 2>/dev/null || true
-apt install -y net-tools curl wget openssl sudo
-check_command "基础工具安装失败"
-success "基础工具安装完成"
+if [ "$restrict_pma_access" = "y" ] || [ "$restrict_pma_access" = "Y" ]; then
+    read -p "请输入允许访问 phpMyAdmin 的 IP 地址或网段 (用空格分隔多个地址): " pma_allowed_ips
+    print_info "将限制 phpMyAdmin 访问权限到以下地址: $pma_allowed_ips"
+else
+    print_info "phpMyAdmin 将允许所有 IP 访问 (请确保在生产环境中配置适当的安全措施)"
+fi
 
-echo
-log "安装 Nginx..."
+# 安装 Nginx
+print_info "安装 Nginx..."
 apt install -y nginx
-check_command "Nginx 安装失败"
+systemctl enable nginx
+systemctl start nginx
 
-# 等待 Nginx 安装完成
+# 安装 MariaDB (Debian 12 的默认 MySQL 替代品)
+print_info "安装 MariaDB..."
+apt install -y mariadb-server mariadb-client
+
+# 安装 PHP 8.2 及相关扩展
+print_info "添加 Sury PHP 仓库..."
+curl -sS https://packages.sury.org/php/README.txt | gpg --dearmor -o /usr/share/keyrings/deb.sury.org-php.gpg
+echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/php.list
+apt update
+
+print_info "安装 PHP 8.2 及扩展..."
+apt install -y php8.2 php8.2-fpm php8.2-mysql php8.2-curl php8.2-gd php8.2-mbstring php8.2-xml php8.2-zip php8.2-bz2 php8.2-intl
+
+# 配置 PHP-FPM
+print_info "配置 PHP-FPM..."
+sed -i 's/;*expose_php = .*/expose_php = Off/' /etc/php/8.2/fpm/php.ini
+sed -i 's/;*allow_url_fopen = .*/allow_url_fopen = Off/' /etc/php/8.2/fpm/php.ini
+sed -i 's/display_errors = .*/display_errors = Off/' /etc/php/8.2/fpm/php.ini
+sed -i 's/display_startup_errors = .*/display_startup_errors = Off/' /etc/php/8.2/fpm/php.ini
+sed -i 's/log_errors = .*/log_errors = On/' /etc/php/8.2/fpm/php.ini
+sed -i 's/file_uploads = .*/file_uploads = On/' /etc/php/8.2/fpm/php.ini
+sed -i 's/upload_max_filesize = .*/upload_max_filesize = 64M/' /etc/php/8.2/fpm/php.ini
+sed -i 's/post_max_size = .*/post_max_size = 64M/' /etc/php/8.2/fpm/php.ini
+sed -i 's/max_execution_time = .*/max_execution_time = 300/' /etc/php/8.2/fpm/php.ini
+sed -i 's/max_input_vars = .*/max_input_vars = 3000/' /etc/php/8.2/fpm/php.ini
+sed -i 's/;*cgi.fix_pathinfo = .*/cgi.fix_pathinfo = 0/' /etc/php/8.2/fpm/php.ini
+
+# 启动 PHP-FPM
+systemctl enable php8.2-fpm
+systemctl start php8.2-fpm
+
+# 验证 PHP-FPM 是否正常运行
 sleep 2
-
-# 检查 Nginx 是否成功安装
-if ! command -v nginx >/dev/null 2>&1; then
-    error_exit "Nginx 安装后未找到，请检查安装过程"
+if ! systemctl is-active --quiet php8.2-fpm; then
+    print_error "PHP-FPM 未能正常启动"
+    systemctl status php8.2-fpm
+    exit 1
 fi
-success "Nginx 安装完成"
+print_info "PHP-FPM 运行正常"
 
-# 检查 Nginx 80 端口
-if command -v netstat >/dev/null 2>&1; then
-    if netstat -tuln 2>/dev/null | grep -q ":80 "; then
-        warning "端口 80 已被占用，Nginx 可能无法正常启动"
-    fi
-elif command -v ss >/dev/null 2>&1; then
-    if ss -tuln 2>/dev/null | grep -q ":80 "; then
-        warning "端口 80 已被占用，Nginx 可能无法正常启动"
-    fi
-fi
-
-echo
-log "安装 MySQL(MariaDB)..."
-# 预配置 MySQL 以避免交互提示
-echo "mariadb-server mysql-server/root_password password temppassword" | debconf-set-selections 2>/dev/null || true
-echo "mariadb-server mysql-server/root_password_again password temppassword" | debconf-set-selections 2>/dev/null || true
-
-DEBIAN_FRONTEND=noninteractive apt install -y mariadb-server mariadb-client
-check_command "MySQL 安装失败"
-
-# 等待安装完成
-sleep 2
-
-# 检查 MySQL 是否成功安装
-if ! command -v mysql >/dev/null 2>&1; then
-    error_exit "MySQL 安装后未找到，请检查安装过程"
-fi
-success "MySQL 安装完成"
-
-# 启动 MySQL 服务
-systemctl start mariadb 2>/dev/null || service mariadb start 2>/dev/null || true
-sleep 3
-
-# 检查 MySQL 是否启动成功
-if ! systemctl is-active --quiet mariadb 2>/dev/null && ! service mariadb status >/dev/null 2>&1; then
-    warning "MySQL 服务启动可能有问题，尝试重新启动..."
-    systemctl restart mariadb 2>/dev/null || service mariadb restart 2>/dev/null || true
-    sleep 3
-fi
-
-# 再次检查
-if ! pgrep -x mysqld >/dev/null && ! pgrep -x mariadbd >/dev/null; then
-    error_exit "MySQL 服务启动失败，请检查日志: journalctl -xeu mariadb"
-fi
-success "MySQL 服务启动成功"
-
-echo
-log "配置 MySQL root 用户..."
-
-# 先尝试无密码连接（新安装的 MariaDB 通常允许 root 无密码连接）
-mysql -u root -e "SELECT 1;" >/dev/null 2>&1
-if [ $? -eq 0 ]; then
-    # 无密码可以连接，设置密码
-    mysql -u root -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('$MYSQL_PWD');" 2>/dev/null || \
-    mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PWD';" 2>/dev/null || \
-    mysql -u root -e "UPDATE mysql.user SET Password=PASSWORD('$MYSQL_PWD') WHERE User='root'; FLUSH PRIVILEGES;" 2>/dev/null || \
-    error_exit "MySQL 密码设置失败"
-    mysql -u root -p"$MYSQL_PWD" -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-else
-    # 尝试使用 unix_socket 插件连接
-    mysql -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('$MYSQL_PWD');" 2>/dev/null || \
-    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_PWD';" 2>/dev/null || \
-    error_exit "MySQL 密码设置失败，请手动配置"
-fi
-
-# 验证密码是否设置成功
-if mysql -u root -p"$MYSQL_PWD" -e "SELECT 1;" >/dev/null 2>&1; then
-    success "MySQL root 用户配置完成"
-else
-    warning "密码验证失败，但继续执行..."
-fi
-
-# 远程访问配置
-if [[ "$MYSQL_REMOTE" == "y" ]]; then
-    log "配置 MySQL 远程访问..."
-    
-    # 使用密码连接
-    mysql -u root -p"$MYSQL_PWD" -e "CREATE USER IF NOT EXISTS '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PWD';" 2>/dev/null || \
-    mysql -u root -p"$MYSQL_PWD" -e "GRANT ALL PRIVILEGES ON *.* TO '$MYSQL_USER'@'%' IDENTIFIED BY '$MYSQL_PWD' WITH GRANT OPTION;" 2>/dev/null || \
-    warning "远程用户创建可能失败"
-    
-    mysql -u root -p"$MYSQL_PWD" -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-    
-    # 修改绑定地址
-    if [ -f /etc/mysql/mariadb.conf.d/50-server.cnf ]; then
-        sed -i "s/^bind-address.*/bind-address = 0.0.0.0/" /etc/mysql/mariadb.conf.d/50-server.cnf
-    elif [ -f /etc/mysql/my.cnf ]; then
-        sed -i "s/^bind-address.*/bind-address = 0.0.0.0/" /etc/mysql/my.cnf
-    elif [ -f /etc/my.cnf ]; then
-        sed -i "s/^bind-address.*/bind-address = 0.0.0.0/" /etc/my.cnf
-    else
-        warning "未找到 MySQL 配置文件，请手动配置 bind-address"
-    fi
-    success "MySQL 远程访问已启用"
-    warning "请注意：开启远程访问存在安全风险，建议配置防火墙规则"
-fi
-
-# 修改端口
-MYSQL_CONF=""
-if [ -f /etc/mysql/mariadb.conf.d/50-server.cnf ]; then
-    MYSQL_CONF="/etc/mysql/mariadb.conf.d/50-server.cnf"
-elif [ -f /etc/mysql/my.cnf ]; then
-    MYSQL_CONF="/etc/mysql/my.cnf"
-elif [ -f /etc/my.cnf ]; then
-    MYSQL_CONF="/etc/my.cnf"
-fi
-
-if [ -n "$MYSQL_CONF" ]; then
-    if grep -q "^port" "$MYSQL_CONF"; then
-        sed -i "s/^port.*/port = $MYSQL_PORT/" "$MYSQL_CONF"
-    else
-        # 如果没有 port 配置，添加到 [mysqld] 段
-        sed -i "/^\[mysqld\]/a port = $MYSQL_PORT" "$MYSQL_CONF"
-    fi
-else
-    warning "未找到 MySQL 配置文件，端口保持默认"
-fi
-
-systemctl restart mariadb 2>/dev/null || service mariadb restart
-check_command "MySQL 重启失败"
-systemctl enable mariadb 2>/dev/null || update-rc.d mariadb defaults 2>/dev/null || true
-success "MySQL 服务配置完成"
-
-# --------------------
-# 安装 PHP 及常用扩展
-# --------------------
-echo
-log "安装 PHP 及常用扩展..."
-apt install -y php-fpm php-cli php-mysql php-curl php-gd php-mbstring \
-    php-xml php-zip php-bcmath php-intl php-json php-soap php-xmlrpc 2>/dev/null || \
-apt install -y php php-fpm php-cli php-mysql php-curl php-gd php-mbstring \
-    php-xml php-zip php-common
-check_command "PHP 安装失败"
-
-# 等待 PHP 安装完成
-sleep 2
-
-# 检查 PHP 是否成功安装
-if ! command -v php >/dev/null 2>&1; then
-    error_exit "PHP 安装后未找到，请检查安装过程"
-fi
-success "PHP 安装完成"
-
-# 获取 PHP 版本
-PHP_VERSION=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;" 2>/dev/null)
-if [ -z "$PHP_VERSION" ]; then
-    error_exit "无法获取 PHP 版本"
-fi
-log "PHP 版本: $PHP_VERSION"
-
-# 检查 PHP-FPM socket
-PHP_FPM_SOCK="/run/php/php${PHP_VERSION}-fpm.sock"
-if [ ! -S "$PHP_FPM_SOCK" ]; then
-    log "启动 PHP-FPM 服务..."
-    systemctl start php${PHP_VERSION}-fpm 2>/dev/null || service php${PHP_VERSION}-fpm start 2>/dev/null || true
-    sleep 3
-    if [ ! -S "$PHP_FPM_SOCK" ]; then
-        warning "PHP-FPM socket 未找到: $PHP_FPM_SOCK，尝试查找其他版本..."
-        # 尝试查找其他 PHP-FPM socket
-        for sock in /run/php/php*-fpm.sock; do
-            if [ -S "$sock" ]; then
-                PHP_FPM_SOCK="$sock"
-                log "找到 PHP-FPM socket: $PHP_FPM_SOCK"
-                break
-            fi
-        done
-        
-        if [ ! -S "$PHP_FPM_SOCK" ]; then
-            error_exit "无法找到 PHP-FPM socket，请检查 PHP-FPM 安装"
-        fi
-    fi
-fi
-success "PHP-FPM 配置完成"
-
-# --------------------
-# 配置 Nginx 与 PHP
-# --------------------
-echo
-log "配置 Nginx"
-mkdir -p $WEB_ROOT
-
-# 备份原有配置
-if [ -f /etc/nginx/sites-enabled/default ]; then
-    mv /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.bak.$(date +%s) 2>/dev/null || true
-fi
-
-cat > /etc/nginx/sites-available/$DOMAIN.conf <<EOF
+# 配置 Nginx 以使用 PHP-FPM
+print_info "配置 Nginx..."
+cat > /etc/nginx/sites-available/default << EOF
 server {
-    listen 80;
-    server_name $DOMAIN;
-
-    root $WEB_ROOT;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    root /var/www/html;
     index index.php index.html index.htm;
+    server_name _;
 
-    # 日志配置
-    access_log /var/log/nginx/${DOMAIN}_access.log;
-    error_log /var/log/nginx/${DOMAIN}_error.log;
-
-    # 字符集
-    charset utf-8;
+    # 安全头
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline';" always;
 
     location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files \$uri \$uri/ =404;
     }
 
-    # phpMyAdmin 配置 - 修复配置以解决 403 错误
-    location /phpmyadmin {
-        root /usr/share;
-        index index.php index.html index.htm;
-        
-        location ~ ^/phpmyadmin/.+\\.php$ {
-            try_files \$uri =404;
-            include snippets/fastcgi-php.conf;
-            fastcgi_pass unix:$PHP_FPM_SOCK;
-            fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-            include fastcgi_params;
-            fastcgi_intercept_errors on;
-        }
-        
-        location ~ ^/phpmyadmin/(.+\\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt))$ {
-            root /usr/share;
-            expires 30d;
-            add_header Cache-Control "public, immutable";
-        }
-    }
-
-    location ~ \\.php$ {
+    location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:$PHP_FPM_SOCK;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
-        fastcgi_intercept_errors on;
-        fastcgi_buffer_size 16k;
-        fastcgi_buffers 4 16k;
     }
 
-    # 禁止访问隐藏文件
-    location ~ /\\. {
+    location ~ /\.ht {
         deny all;
-        access_log off;
-        log_not_found off;
     }
-
-    # 静态文件缓存
-    location ~* \\.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
-        expires 30d;
-        add_header Cache-Control "public, immutable";
+    
+    # 防止访问敏感文件
+    location ~* \.(ini|log|conf)$ {
+        deny all;
     }
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/$DOMAIN.conf /etc/nginx/sites-enabled/$DOMAIN.conf
-check_command "Nginx 配置链接失败"
+# 重启 Nginx 以应用 PHP 配置
+systemctl restart nginx
 
-echo
-log "创建测试页面..."
-cat > $WEB_ROOT/index.php <<'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>LNMP 测试页面</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        .success { color: green; font-weight: bold; }
-        .info { background: #f0f0f0; padding: 10px; border-radius: 5px; }
-    </style>
-</head>
-<body>
-    <h1 class="success">✅ LNMP 安装成功！</h1>
-    <div class="info">
-        <p><strong>PHP 版本:</strong> <?php echo PHP_VERSION; ?></p>
-        <p><strong>服务器时间:</strong> <?php echo date('Y-m-d H:i:s'); ?></p>
-    </div>
-    <hr>
-    <h2>PHP 配置信息</h2>
-    <?php phpinfo(); ?>
-</body>
-</html>
+# 验证 Nginx 是否正常运行
+sleep 2
+if ! systemctl is-active --quiet nginx; then
+    print_error "Nginx 未能正常启动"
+    systemctl status nginx
+    exit 1
+fi
+print_info "Nginx 运行正常"
+
+# 启动 MariaDB 服务
+systemctl enable mariadb
+systemctl start mariadb
+
+# 验证 MariaDB 是否正常运行
+sleep 5
+if ! systemctl is-active --quiet mariadb; then
+    print_error "MariaDB 未能正常启动"
+    systemctl status mariadb
+    exit 1
+fi
+print_info "MariaDB 运行正常"
+
+# 安全配置 MariaDB
+print_info "安全配置 MariaDB..."
+mysql_secure_installation << EOF
+
+y
+$mysql_root_pass
+$mysql_root_pass
+y
+y
+y
+y
 EOF
 
-# 设置权限
-chown -R www-data:www-data $WEB_ROOT 2>/dev/null || chown -R nginx:nginx $WEB_ROOT 2>/dev/null || true
-chmod -R 755 $WEB_ROOT
-
-# 测试 Nginx 配置
-nginx -t
-check_command "Nginx 配置测试失败"
-
-# 重启服务
-systemctl restart nginx 2>/dev/null || service nginx restart
-check_command "Nginx 重启失败"
-
-systemctl restart php${PHP_VERSION}-fpm 2>/dev/null || service php${PHP_VERSION}-fpm restart
-check_command "PHP-FPM 重启失败"
-
-# 启用开机自启
-systemctl enable nginx php${PHP_VERSION}-fpm 2>/dev/null || \
-{
-    update-rc.d nginx defaults 2>/dev/null || true
-    update-rc.d php${PHP_VERSION}-fpm defaults 2>/dev/null || true
-}
-success "Nginx 和 PHP 配置完成"
-
-# --------------------
-# 安装 phpMyAdmin
-# --------------------
-echo
-read -p "是否安装 phpMyAdmin？(Y/n): " INSTALL_PMA
-INSTALL_PMA=${INSTALL_PMA:-y}
-INSTALL_PMA=${INSTALL_PMA,,}
-
-if [[ "$INSTALL_PMA" == "y" ]]; then
-    log "开始安装 phpMyAdmin..."
-    
-    # 安装 phpMyAdmin
-    DEBIAN_FRONTEND=noninteractive apt install -y phpmyadmin
-    check_command "phpMyAdmin 安装失败"
-    
-    # 配置 phpMyAdmin 访问路径
-    PMA_PATH="/phpmyadmin"
-    read -p "请输入 phpMyAdmin 访问路径（默认: /phpmyadmin）: " PMA_CUSTOM_PATH
-    if [ -n "$PMA_CUSTOM_PATH" ]; then
-        PMA_PATH="$PMA_CUSTOM_PATH"
-    fi
-    
-    # 创建符号链接
-    PMA_DIR="/usr/share/phpmyadmin"
-    ln -sf $PMA_DIR $WEB_ROOT$PMA_PATH
-    
-    # 配置 phpMyAdmin Blowfish secret
-    if [ -f /etc/phpmyadmin/config.inc.php ]; then
-        BLOWFISH_SECRET=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-32)
-        sed -i "s/\\$cfg\\['blowfish_secret'\\] = ''/\\$cfg['blowfish_secret'] = '$BLOWFISH_SECRET'/" /etc/phpmyadmin/config.inc.php 2>/dev/null || \
-        echo "\\$cfg['blowfish_secret'] = '$BLOWFISH_SECRET';" >> /etc/phpmyadmin/config.inc.php
-    fi
-    
-    # 设置权限
-    chown -R www-data:www-data $PMA_DIR 2>/dev/null || chown -R nginx:nginx $PMA_DIR 2>/dev/null || true
-    chmod -R 755 $PMA_DIR
-    
-    # 重启 Nginx
-    systemctl restart nginx 2>/dev/null || service nginx restart
-    check_command "Nginx 重启失败"
-    
-    success "phpMyAdmin 安装完成"
-    log "phpMyAdmin 访问路径: $PMA_PATH"
+# 创建 phpMyAdmin 控制用户（如果需要）
+if [ -n "$pma_user" ] && [ -n "$pma_pass" ]; then
+    print_info "配置 MariaDB phpMyAdmin 控制用户..."
+    mysql -u root -p"$mysql_root_pass" << EOF
+CREATE DATABASE IF NOT EXISTS phpmyadmin;
+CREATE USER '$pma_user'@'localhost' IDENTIFIED BY '$pma_pass';
+GRANT ALL PRIVILEGES ON phpmyadmin.* TO '$pma_user'@'localhost';
+FLUSH PRIVILEGES;
+EOF
 else
-    log "跳过 phpMyAdmin 安装"
+    print_info "跳过 phpMyAdmin 控制用户配置"
 fi
 
-# --------------------
-# 验证服务状态
-# --------------------
-echo
-log "验证服务状态..."
+# 安装 phpMyAdmin
+PMA_VERSION="5.2.1"
+PMA_URL="https://files.phpmyadmin.net/phpMyAdmin/$PMA_VERSION/phpMyAdmin-$PMA_VERSION-all-languages.tar.gz"
+print_info "下载 phpMyAdmin $PMA_VERSION..."
+cd /tmp
+if ! wget --tries=3 --timeout=30 "$PMA_URL"; then
+    print_error "无法下载 phpMyAdmin，请检查网络连接"
+    exit 1
+fi
 
-check_service() {
-    if systemctl is-active --quiet $1 2>/dev/null; then
-        success "$1 服务运行正常"
-        return 0
-    elif service $1 status >/dev/null 2>&1; then
-        success "$1 服务运行正常"
-        return 0
-    else
-        warning "$1 服务未运行"
-        return 1
-    fi
+print_info "验证下载的文件..."
+if [[ ! -f "phpMyAdmin-$PMA_VERSION-all-languages.tar.gz" ]]; then
+    print_error "phpMyAdmin 下载失败"
+    exit 1
+fi
+
+print_info "解压 phpMyAdmin..."
+tar -xzf phpMyAdmin-$PMA_VERSION-all-languages.tar.gz
+if [[ ! -d "phpMyAdmin-$PMA_VERSION-all-languages" ]]; then
+    print_error "phpMyAdmin 解压失败"
+    exit 1
+fi
+
+mv phpMyAdmin-$PMA_VERSION-all-languages /usr/share/phpmyadmin
+ln -s /usr/share/phpmyadmin /var/www/html/phpmyadmin
+
+# 创建 phpMyAdmin 配置目录
+mkdir -p /usr/share/phpmyadmin/config
+chown -R www-data:www-data /usr/share/phpmyadmin
+chmod -R 755 /usr/share/phpmyadmin
+chmod 660 /usr/share/phpmyadmin/config/config.inc.php
+
+# 验证 phpMyAdmin 目录权限
+if [[ ! -r /usr/share/phpmyadmin/config.inc.php ]]; then
+    print_error "phpMyAdmin 配置文件权限设置失败"
+    exit 1
+fi
+print_info "phpMyAdmin 权限设置正确"
+
+# 创建 phpMyAdmin 配置文件
+print_info "配置 phpMyAdmin..."
+if [ -n "$pma_user" ] && [ -n "$pma_pass" ]; then
+    # 创建带控制用户的配置
+    cat > /usr/share/phpmyadmin/config.inc.php << EOF
+<?php
+\$cfg['blowfish_secret'] = '$(openssl rand -hex 32)';
+
+\$i = 0;
+\$i++;
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = 'localhost';
+\$cfg['Servers'][\$i]['compress'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+
+// 控制用户设置（用于配置存储等高级功能）
+\$cfg['Servers'][\$i]['controlhost'] = 'localhost';
+\$cfg['Servers'][\$i]['controlport'] = '';
+\$cfg['Servers'][\$i]['controluser'] = '$pma_user';
+\$cfg['Servers'][\$i]['controlpass'] = '$pma_pass';
+\$cfg['Servers'][\$i]['pmadb'] = 'phpmyadmin';
+\$cfg['Servers'][\$i]['bookmarktable'] = 'pma__bookmark';
+\$cfg['Servers'][\$i]['relation'] = 'pma__relation';
+\$cfg['Servers'][\$i]['table_info'] = 'pma__table_info';
+\$cfg['Servers'][\$i]['table_coords'] = 'pma__table_coords';
+\$cfg['Servers'][\$i]['pdf_pages'] = 'pma__pdf_pages';
+\$cfg['Servers'][\$i]['column_info'] = 'pma__column_info';
+\$cfg['Servers'][\$i]['history'] = 'pma__history';
+\$cfg['Servers'][\$i]['table_uiprefs'] = 'pma__table_uiprefs';
+\$cfg['Servers'][\$i]['tracking'] = 'pma__tracking';
+\$cfg['Servers'][\$i]['userconfig'] = 'pma__userconfig';
+\$cfg['Servers'][\$i]['recent'] = 'pma__recent';
+\$cfg['Servers'][\$i]['favorite'] = 'pma__favorite';
+\$cfg['Servers'][\$i]['users'] = 'pma__users';
+\$cfg['Servers'][\$i]['usergroups'] = 'pma__usergroups';
+\$cfg['Servers'][\$i]['navigationhiding'] = 'pma__navigationhiding';
+\$cfg['Servers'][\$i]['savedsearches'] = 'pma__savedsearches';
+\$cfg['Servers'][\$i]['central_columns'] = 'pma__central_columns';
+\$cfg['Servers'][\$i]['designer_settings'] = 'pma__designer_settings';
+\$cfg['Servers'][\$i]['export_templates'] = 'pma__export_templates';
+
+\$cfg['UploadDir'] = '';
+\$cfg['SaveDir'] = '';
+
+// 额外的安全配置
+\$cfg['CheckConfigurationPermissions'] = false;
+?>
+EOF
+else
+    # 创建基本配置
+    cat > /usr/share/phpmyadmin/config.inc.php << EOF
+<?php
+\$cfg['blowfish_secret'] = '$(openssl rand -hex 32)';
+
+\$i = 0;
+\$i++;
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = 'localhost';
+\$cfg['Servers'][\$i]['compress'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+
+\$cfg['UploadDir'] = '';
+\$cfg['SaveDir'] = '';
+
+// 额外的安全配置
+\$cfg['CheckConfigurationPermissions'] = false;
+?>
+EOF
+fi
+
+# 配置 Nginx 以支持 phpMyAdmin
+print_info "配置 Nginx 支持 phpMyAdmin..."
+if [ "$restrict_pma_access" = "y" ] || [ "$restrict_pma_access" = "Y" ]; then
+    # 创建带访问限制的配置
+    cat > /etc/nginx/conf.d/phpmyadmin.conf << EOF
+location $pma_path {
+    alias /usr/share/phpmyadmin;
+    index index.php;
+    
+    # 限制访问来源
+    deny all;
+$(echo "$pma_allowed_ips" | tr ' ' '\n' | sed 's/^/    allow /')
+    allow 127.0.0.1;
+    allow ::1;
+    return 403;
+
+    location ~ ^$pma_path/(.+\.php)$ {
+        alias /usr/share/phpmyadmin/\$1;
+        if (!-f \$request_filename) {
+            return 404;
+        }
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$request_filename;
+        # 安全头
+        add_header X-Frame-Options "SAMEORIGIN";
+        add_header X-Content-Type-Options "nosniff";
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+        root /usr/share/phpmyadmin;
+        expires 1y;
+        add_header Cache-Control "public";
+        add_header X-Content-Type-Options "nosniff";
+        log_not_found off;
+    }
 }
+EOF
+else
+    # 创建基本配置
+    cat > /etc/nginx/conf.d/phpmyadmin.conf << EOF
+location $pma_path {
+    alias /usr/share/phpmyadmin;
+    index index.php;
 
-check_service nginx
-check_service mariadb
-check_service php${PHP_VERSION}-fpm
+    location ~ ^$pma_path/(.+\.php)$ {
+        alias /usr/share/phpmyadmin/\$1;
+        if (!-f \$request_filename) {
+            return 404;
+        }
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$request_filename;
+        # 安全头
+        add_header X-Frame-Options "SAMEORIGIN";
+        add_header X-Content-Type-Options "nosniff";
+    }
 
-# --------------------
-# 生成报告
-# --------------------
-cat > $REPORT_FILE <<EOF
-===================================
- LNMP 一键安装完成报告
- (含 phpMyAdmin 管理工具)
-===================================
-安装时间: $(date '+%Y-%m-%d %H:%M:%S')
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+        root /usr/share/phpmyadmin;
+        expires 1y;
+        add_header Cache-Control "public";
+        add_header X-Content-Type-Options "nosniff";
+        log_not_found off;
+    }
+}
+EOF
+fi
 
-【基本信息】
-网站目录: $WEB_ROOT
-访问地址: http://$DOMAIN
-PHP 版本: $PHP_VERSION
-phpMyAdmin: $([ "$INSTALL_PMA" == "y" ] && echo "已安装 - 访问地址: http://$DOMAIN$PMA_PATH" || echo "未安装")
-
-【MySQL 配置】
-MySQL 用户: $MYSQL_USER
-MySQL 端口: $MYSQL_PORT
-远程访问: $([ "$MYSQL_REMOTE" == "y" ] && echo "已启用" || echo "未启用")
-
-【配置文件位置】
-Nginx 配置: /etc/nginx/sites-available/$DOMAIN.conf
-PHP-FPM 配置: /etc/php/$PHP_VERSION/fpm/php.ini
-MySQL 配置: /etc/mysql/mariadb.conf.d/50-server.cnf
-
-【日志文件】
-Nginx 访问日志: /var/log/nginx/${DOMAIN}_access.log
-Nginx 错误日志: /var/log/nginx/${DOMAIN}_error.log
-安装日志: $LOG_FILE
-
-【安全建议】
-1. 请妥善保管 MySQL 密码，不要泄露
-2. 建议修改 MySQL 默认端口 3306
-3. 如开启远程访问，请配置防火墙规则限制 IP
-4. 建议配置 SSL 证书启用 HTTPS
-5. 定期更新系统和软件包
-6. $([ "$INSTALL_PMA" == "y" ] && echo "phpMyAdmin 建议修改访问路径，并设置访问 IP 白名单" || echo "如需要数据库管理工具，可以安装 phpMyAdmin")
-
-【防火墙配置参考】
-# 允许 HTTP
-ufw allow 80/tcp
-
-# 允许 HTTPS（如需要）
-ufw allow 443/tcp
-
-# 允许 MySQL 远程访问（如需要）
-ufw allow $MYSQL_PORT/tcp
-
-【常用命令】
 # 重启 Nginx
 systemctl restart nginx
 
-# 重启 PHP-FPM
-systemctl restart php${PHP_VERSION}-fpm
+# 验证 Nginx 配置语法
+if ! nginx -t; then
+    print_error "Nginx 配置文件语法错误"
+    exit 1
+fi
 
-# 重启 MySQL
-systemctl restart mariadb
+# 验证 Nginx 服务状态
+sleep 2
+if ! systemctl is-active --quiet nginx; then
+    print_error "Nginx 未能正常运行"
+    systemctl status nginx
+    exit 1
+fi
+print_info "Nginx 配置验证通过且运行正常"
 
-# 查看服务状态
-systemctl status nginx
-systemctl status php${PHP_VERSION}-fpm
-systemctl status mariadb
-
-========================
-报告文件: $REPORT_FILE
-日志文件: $LOG_FILE
-===================================
+# 创建测试页面
+print_info "创建 PHP 测试页面..."
+cat > /var/www/html/info.php << EOF
+<?php
+phpinfo();
+?>
 EOF
 
-# 设置报告文件权限（只有 root 可读）
-chmod 600 $REPORT_FILE
-
-echo
-success "LNMP 一键安装完成！"
-
-echo
-echo "📄 详细信息请查看: $REPORT_FILE"
-echo "📋 安装日志位置: $LOG_FILE"
-echo
-SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-if [ -z "$SERVER_IP" ]; then
-    SERVER_IP=$(ip addr show 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
-fi
-if [ -n "$SERVER_IP" ]; then
-    echo "🌐 测试访问: http://$SERVER_IP"
+# 验证测试页面可访问性 (基本检查)
+if [[ -f /var/www/html/info.php ]] && [[ -r /var/www/html/info.php ]]; then
+    print_info "PHP 测试页面创建成功"
 else
-    echo "🌐 测试访问: http://$DOMAIN"
-fi
-echo "   或访问: http://$DOMAIN"
-if [[ "$INSTALL_PMA" == "y" ]]; then
-    echo
-    if [ -n "$SERVER_IP" ]; then
-        echo "🗄️  phpMyAdmin: http://$SERVER_IP$PMA_PATH"
-    fi
-    echo "   或访问: http://$DOMAIN$PMA_PATH"
-    echo "   用户名: $MYSQL_USER"
+    print_warn "PHP 测试页面创建可能存在问题"
 fi
 
+# 启用防火墙（如果 UFW 可用）
+if command -v ufw &> /dev/null; then
+    print_info "配置防火墙..."
+    ufw allow OpenSSH
+    ufw allow 'Nginx Full'
+    ufw --force enable
+fi
+
+# 完成安装
+print_info "安装完成！"
 echo
+print_info "=== 安装摘要 ==="
+print_info "Nginx 已安装并运行在端口 80"
+print_info "MariaDB 已安装 (用户名: root)"
+print_info "PHP 8.2 已安装 (FPM 模式)"
+print_info "phpMyAdmin 已安装在: $pma_path (默认: /phpmyadmin)"
+echo
+print_info "访问 phpMyAdmin: http://\$(hostname -I | awk '{print \$1}')$pma_path"
+print_info "访问 PHP 信息页面: http://\$(hostname -I | awk '{print \$1}')/info.php (使用后请删除)"
+echo
+print_info "=== 数据库信息 ==="
+print_info "MySQL Root 密码: $mysql_root_pass"
+if [ -n "$pma_user" ] && [ -n "$pma_pass" ]; then
+    print_info "phpMyAdmin 控制用户: $pma_user"
+    print_info "phpMyAdmin 控制用户密码: $pma_pass"
+    print_info "(此用户用于 phpMyAdmin 高级功能，如配置存储等)"
+else
+    print_info "未创建 phpMyAdmin 控制用户"
+    print_info "(可使用 MySQL root 用户或其他数据库用户登录 phpMyAdmin)"
+fi
+echo
+print_warn "安全提示: 请在使用 phpMyAdmin 后删除 /var/www/html/info.php 文件"
+print_warn "安全提示: 请妥善保存密码信息"
+print_info ""
+# 清理临时文件
+print_info "清理临时文件..."
+rm -rf /tmp/phpMyAdmin-5.2.1-all-languages*
+print_info "清理完成"
 
-log "LNMP 安装流程完成"
+print_info "=== 生产环境安全建议 ==="
+print_info "1. 考虑配置 SSL/TLS 证书以启用 HTTPS 访问"
+print_info "2. 定期更新系统和软件包"
+print_info "3. 配置适当的防火墙规则"
+print_info "4. 限制对服务器的 SSH 访问"
+print_info "5. 定期备份数据库和重要文件"
+print_info "6. 考虑使用 WAF (Web Application Firewall)"
+print_info "7. 监控系统日志以发现异常活动"
+print_info "8. 定期检查安全漏洞和补丁"
+
+# 完成信息
+echo
+print_info "安装和验证完成！"
+print_info "所有服务已启动并验证正常运行"
+print_info "请根据上面显示的信息访问您的服务"
+
+EOF
