@@ -10,7 +10,7 @@
 - 🛡️ **错误处理**：完善的错误检测和处理机制
 - 🎯 **交互配置**：MySQL 密码、端口、远程访问等可自定义
 - 📦 **最小系统支持**：自动安装必要依赖，支持最小化安装的系统
-- 🗄️ **phpMyAdmin**：可选安装 Web 数据库管理工具
+- 🗄️ **phpMyAdmin**：可选安装 Web 数据库管理工具，已修复 Nginx 路由配置
 
 ## 📋 系统要求
 
@@ -50,13 +50,13 @@
 
 ```bash
 # 使用 wget
-wget https://raw.githubusercontent.com/mickey-cheng/debian-lnmp/refs/heads/main/lnmp_install.sh
+wget https://raw.githubusercontent.com/你的用户名/仓库名/main/lnmp_install.sh
 
 # 或使用 curl
-curl -O https://raw.githubusercontent.com/mickey-cheng/debian-lnmp/refs/heads/main/lnmp_install.sh
+curl -O https://raw.githubusercontent.com/你的用户名/仓库名/main/lnmp_install.sh
 
 # 或直接克隆仓库
-git clone https://github.com/mickey-cheng/debian-lnmp.git
+git clone https://github.com/你的用户名/仓库名.git
 cd 仓库名
 ```
 
@@ -307,7 +307,33 @@ mysql -u root -p
 ps aux | grep mysql
 ```
 
-### phpMyAdmin 403 错误
+### phpMyAdmin 问题
+
+#### 403 Forbidden 错误（已修复）
+
+**v1.0 版本已修复此问题**，脚本现在会自动在 Nginx 配置中添加正确的 phpMyAdmin 路由配置：
+
+```nginx
+# phpMyAdmin 配置
+location ^~ /phpmyadmin {
+    alias /usr/share/phpmyadmin;
+    index index.php;
+    
+    location ~ ^/phpmyadmin/(.+\.php)$ {
+        alias /usr/share/phpmyadmin/$1;
+        fastcgi_pass unix:/run/php/phpX.X-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $request_filename;
+        include fastcgi_params;
+    }
+    
+    location ~* ^/phpmyadmin/(.+\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt))$ {
+        alias /usr/share/phpmyadmin/$1;
+    }
+}
+```
+
+如仍遇到问题，可手动检查：
 
 ```bash
 # 检查目录权限
@@ -317,11 +343,15 @@ ls -la /usr/share/phpmyadmin
 # 检查符号链接
 ls -la /var/www/html/ | grep phpmyadmin
 
+# 检查 Nginx 配置
+cat /etc/nginx/sites-available/localhost.conf | grep -A 20 "phpmyadmin"
+
 # 修复权限
 chown -R www-data:www-data /usr/share/phpmyadmin
 chmod -R 755 /usr/share/phpmyadmin
 
-# 重启 Nginx
+# 测试并重启 Nginx
+nginx -t
 systemctl restart nginx
 ```
 
@@ -369,6 +399,15 @@ cat /root/lnmp_install_report.txt
 5. **密码安全**：安装报告包含敏感信息，权限已设置为 600（仅 root 可读）
 6. **端口冲突**：确保 80、3306 端口未被占用
 7. **系统更新**：建议先更新系统再运行脚本
+
+## 🔄 版本历史
+
+### v1.0 (2025-10-15)
+- ✅ 修复 phpMyAdmin 403 错误：添加正确的 Nginx location 配置
+- ✅ 使用 `alias` 指令替代符号链接方式
+- ✅ 添加 phpMyAdmin PHP 文件和静态资源的独立处理规则
+- ✅ 完善错误处理和日志记录
+- ✅ 支持最小化 Debian 系统安装
 
 ## 🔄 卸载
 
