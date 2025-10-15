@@ -353,25 +353,28 @@ server {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
-    # phpMyAdmin 配置
-    location ^~ /phpmyadmin {
-        alias /usr/share/phpmyadmin;
-        index index.php;
+    # phpMyAdmin 配置 - 修复配置以解决 403 错误
+    location /phpmyadmin {
+        root /usr/share;
+        index index.php index.html index.htm;
         
-        location ~ ^/phpmyadmin/(.+\.php)$ {
-            alias /usr/share/phpmyadmin/\$1;
+        location ~ ^/phpmyadmin/.+\\.php$ {
+            try_files \$uri =404;
+            include snippets/fastcgi-php.conf;
             fastcgi_pass unix:$PHP_FPM_SOCK;
-            fastcgi_index index.php;
-            fastcgi_param SCRIPT_FILENAME \$request_filename;
+            fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
             include fastcgi_params;
+            fastcgi_intercept_errors on;
         }
         
-        location ~* ^/phpmyadmin/(.+\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt))$ {
-            alias /usr/share/phpmyadmin/\$1;
+        location ~ ^/phpmyadmin/(.+\\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt))$ {
+            root /usr/share;
+            expires 30d;
+            add_header Cache-Control "public, immutable";
         }
     }
 
-    location ~ \.php\$ {
+    location ~ \\.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:$PHP_FPM_SOCK;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
@@ -382,14 +385,14 @@ server {
     }
 
     # 禁止访问隐藏文件
-    location ~ /\. {
+    location ~ /\\. {
         deny all;
         access_log off;
         log_not_found off;
     }
 
     # 静态文件缓存
-    location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
+    location ~* \\.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
     }
@@ -478,8 +481,8 @@ if [[ "$INSTALL_PMA" == "y" ]]; then
     # 配置 phpMyAdmin Blowfish secret
     if [ -f /etc/phpmyadmin/config.inc.php ]; then
         BLOWFISH_SECRET=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-32)
-        sed -i "s/\$cfg\['blowfish_secret'\] = ''/\$cfg['blowfish_secret'] = '$BLOWFISH_SECRET'/" /etc/phpmyadmin/config.inc.php 2>/dev/null || \
-        echo "\$cfg['blowfish_secret'] = '$BLOWFISH_SECRET';" >> /etc/phpmyadmin/config.inc.php
+        sed -i "s/\\$cfg\\['blowfish_secret'\\] = ''/\\$cfg['blowfish_secret'] = '$BLOWFISH_SECRET'/" /etc/phpmyadmin/config.inc.php 2>/dev/null || \
+        echo "\\$cfg['blowfish_secret'] = '$BLOWFISH_SECRET';" >> /etc/phpmyadmin/config.inc.php
     fi
     
     # 设置权限
@@ -594,6 +597,7 @@ chmod 600 $REPORT_FILE
 
 echo
 success "LNMP 一键安装完成！"
+
 echo
 echo "📄 详细信息请查看: $REPORT_FILE"
 echo "📋 安装日志位置: $LOG_FILE"
@@ -616,6 +620,7 @@ if [[ "$INSTALL_PMA" == "y" ]]; then
     echo "   或访问: http://$DOMAIN$PMA_PATH"
     echo "   用户名: $MYSQL_USER"
 fi
+
 echo
 
 log "LNMP 安装流程完成"
