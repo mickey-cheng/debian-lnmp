@@ -428,17 +428,19 @@ print_info "配置 Nginx 支持 phpMyAdmin..."
 if [ "$restrict_pma_access" = "y" ] || [ "$restrict_pma_access" = "Y" ]; then
     # 创建带访问限制的配置
     cat > /etc/nginx/conf.d/phpmyadmin.conf << EOF
-location $pma_path {
-    alias /usr/share/phpmyadmin;
-    index index.php;
-    
+location ~ ^$pma_path {
     # 限制访问来源
     deny all;
 $(echo "$pma_allowed_ips" | tr ' ' '\n' | sed 's/^/    allow /')
     allow 127.0.0.1;
     allow ::1;
     return 403;
+}
 
+location $pma_path {
+    alias /usr/share/phpmyadmin;
+    index index.php;
+    
     location ~ ^$pma_path/(.+\.php)$ {
         alias /usr/share/phpmyadmin/\$1;
         if (!-f \$request_filename) {
