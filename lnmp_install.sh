@@ -154,9 +154,21 @@ apt install -y mariadb-server mariadb-client
 
 # 安装 PHP 8.2 及相关扩展
 print_info "添加 Sury PHP 仓库..."
-curl -sS https://packages.sury.org/php/README.txt | gpg --dearmor -o /usr/share/keyrings/deb.sury.org-php.gpg
+# 下载并添加 GPG 密钥
+curl -sS https://packages.sury.org/php/apt.gpg | gpg --dearmor | tee /usr/share/keyrings/deb.sury.org-php.gpg > /dev/null
+if [ $? -ne 0 ]; then
+    print_error "无法添加 Sury PHP 仓库的 GPG 密钥"
+    exit 1
+fi
+
 echo "deb [signed-by=/usr/share/keyrings/deb.sury.org-php.gpg] https://packages.sury.org/php/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/php.list
+
+# 更新包列表
 apt update
+if [ $? -ne 0 ]; then
+    print_error "无法更新包列表"
+    exit 1
+fi
 
 print_info "安装 PHP 8.2 及扩展..."
 apt install -y php8.2 php8.2-fpm php8.2-mysql php8.2-curl php8.2-gd php8.2-mbstring php8.2-xml php8.2-zip php8.2-bz2 php8.2-intl
